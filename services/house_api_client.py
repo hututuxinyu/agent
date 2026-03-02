@@ -1,5 +1,6 @@
 """房源API客户端"""
-import httpx
+import requests
+import asyncio
 from typing import Dict, Any, Optional, List
 from config import HOUSE_API_BASE_URL, REQUEST_TIMEOUT
 
@@ -46,16 +47,19 @@ class HouseAPIClient:
         url = f"{self.base_url}{endpoint}"
         headers = self.headers if need_user_id else {"Content-Type": "application/json"}
         
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.request(
+        def _sync_request():
+            response = requests.request(
                 method=method,
                 url=url,
                 headers=headers,
                 params=params,
-                json=json_data
+                json=json_data,
+                timeout=self.timeout
             )
             response.raise_for_status()
             return response.json()
+        
+        return await asyncio.to_thread(_sync_request)
     
     async def init_houses(self) -> Dict[str, Any]:
         """重置房源数据"""
