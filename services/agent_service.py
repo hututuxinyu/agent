@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from services.llm_client import LLMClient
 from services.session_manager import SessionManager
 from services.house_api_client import HouseAPIClient
+from services.logger_service import LoggerService
 from tools.house_tools import TOOLS_DEFINITION, TOOL_FUNCTIONS
 
 
@@ -22,6 +23,7 @@ class AgentService:
         """
         self.llm_client = LLMClient(model_ip)
         self.session_manager = session_manager
+        self.logger = LoggerService()
         self.max_iterations = 10  # 最大工具调用轮数
         self.system_prompt = self._get_system_prompt()
         # 存储最近查询的房源信息，用于租房操作
@@ -306,15 +308,21 @@ class AgentService:
         tool_results = []
         
         try:
+            # 检查是否为新Session（在创建之前检查）
+            is_new_session = session_id not in self.session_manager.sessions
+            
             # 获取或创建Session
             client = self.session_manager.get_or_create_session(session_id)
             
             # 如果是新Session，初始化（调用房源重置）
-            if session_id not in self.session_manager.sessions:
+            if is_new_session:
                 await self.session_manager.init_session(session_id)
             
             # 指代消解：处理用户消息中的指代
             resolved_message = self._resolve_reference(message, session_id)
+            
+            # 记录用户消息
+            self.logger.log_session_message(session_id, "USER_MSG", resolved_message)
             
             # 添加用户消息到历史
             self.session_manager.add_message(session_id, "user", resolved_message)
@@ -444,6 +452,15 @@ class AgentService:
                             "output": tool_output
                         })
                         
+                        # 记录工具调用日志
+                        self.logger.log_tool_call(
+                            session_id,
+                            tool_name,
+                            tool_args,
+                            tool_result.get("success", False),
+                            tool_output if len(tool_output) < 1000 else tool_output[:1000] + "..."
+                        )
+                        
                     except Exception as e:
                         # 工具执行失败
                         error_output = json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -457,6 +474,16 @@ class AgentService:
                             "success": False,
                             "output": error_output
                         })
+                        
+                        # 记录工具调用错误日志
+                        self.logger.log_tool_call(
+                            session_id,
+                            tool_name,
+                            tool_args,
+                            False,
+                            error_output
+                        )
+                        self.logger.log_error(session_id, "TOOL_EXECUTION_ERROR", str(e), e)
                 
                 # 添加工具消息到历史
                 messages.extend(tool_messages)
@@ -499,6 +526,7 @@ class AgentService:
                             final_response = f"租房操作失败：{rent_result.get('error', '未知错误')}"
                     except Exception as e:
                         print(f"警告: 自动调用租房工具失败: {e}")
+                        self.logger.log_error(session_id, "AUTO_RENT_ERROR", f"自动调用租房工具失败: {str(e)}", e)
                         # 继续使用原始回复
             
             # 格式化响应（如果是房源查询，需要JSON格式）
@@ -506,6 +534,9 @@ class AgentService:
             
             # 添加最终回复到历史
             self.session_manager.add_message(session_id, "assistant", formatted_response)
+            
+            # 记录AI回复
+            self.logger.log_session_message(session_id, "AI_REPLY", formatted_response)
             
             duration_ms = int((time.time() - start_time) * 1000)
             
@@ -518,6 +549,7 @@ class AgentService:
             
         except httpx.TimeoutException as e:
             duration_ms = int((time.time() - start_time) * 1000)
+            self.logger.log_error(session_id, "TIMEOUT_ERROR", "请求超时", e)
             return {
                 "response": "请求超时，请稍后重试",
                 "status": "error",
@@ -526,6 +558,7 @@ class AgentService:
             }
         except httpx.HTTPStatusError as e:
             duration_ms = int((time.time() - start_time) * 1000)
+            self.logger.log_error(session_id, "HTTP_ERROR", f"HTTP错误 {e.response.status_code}: {str(e)}", e)
             return {
                 "response": f"HTTP错误 {e.response.status_code}: {str(e)}",
                 "status": "error",
@@ -539,6 +572,7 @@ class AgentService:
             # 记录详细错误信息（用于调试）
             print(f"处理消息时发生错误: {error_msg}")
             print(traceback.format_exc())
+            self.logger.log_error(session_id, "PROCESS_MESSAGE_ERROR", error_msg, e)
             return {
                 "response": f"处理消息时发生错误: {error_msg}",
                 "status": "error",
@@ -697,7 +731,7 @@ class AgentService:
                             if house_id and str(house_id) in house_ids:
                                 house_info_map[str(house_id)] = {
                                     "price": item.get("price", 0),
-                                    "area": item.get("area", 0),
+                                    "area": item.get("area_sqm", 0),  # 使用 area_sqm（面积）而不是 area（商圈）
                                     "subway_distance": item.get("subway_distance", float('inf'))
                                 }
                 except Exception as e:

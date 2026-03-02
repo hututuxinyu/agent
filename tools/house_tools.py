@@ -89,6 +89,22 @@ TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
+            "name": "get_nearby_landmarks",
+            "description": "查询某小区周边某类地标（商超、公园等），按距离排序。用于回答「附近有没有商场/公园」等周边配套问题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "community": {"type": "string", "description": "小区名称，如 保利居、中海阁"},
+                    "type": {"type": "string", "description": "地标类型，如 商超、公园"},
+                    "max_distance_m": {"type": "number", "description": "最大直线距离（米），默认3000。用于查商超、公园等周边配套"}
+                },
+                "required": ["community"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "rent_house",
             "description": "租房操作，将房源设为已租状态",
             "parameters": {
@@ -181,6 +197,19 @@ async def get_nearby_houses(client: HouseAPIClient, landmark_id: str, max_distan
             listing_platform=listing_platform,
             page=page,
             page_size=page_size
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def get_nearby_landmarks(client: HouseAPIClient, community: str, type: Optional[str] = None, max_distance_m: Optional[float] = None) -> Dict[str, Any]:
+    """查询小区周边地标工具函数"""
+    try:
+        result = await client.get_nearby_landmarks(
+            community=community,
+            type=type,
+            max_distance_m=max_distance_m
         )
         return {"success": True, "data": result}
     except Exception as e:

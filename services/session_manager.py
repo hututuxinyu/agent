@@ -2,6 +2,7 @@
 from typing import Dict, List, Optional
 from utils.helpers import extract_user_id_from_session_id
 from services.house_api_client import HouseAPIClient
+from services.logger_service import LoggerService
 
 
 class SessionManager:
@@ -16,6 +17,8 @@ class SessionManager:
         self.session_user_ids: Dict[str, str] = {}
         # 存储每个session的API客户端
         self.session_clients: Dict[str, HouseAPIClient] = {}
+        # 日志服务
+        self.logger = LoggerService()
     
     def get_or_create_session(self, session_id: str) -> HouseAPIClient:
         """
@@ -37,6 +40,8 @@ class SessionManager:
             # 创建API客户端
             client = HouseAPIClient(user_id)
             self.session_clients[session_id] = client
+            # 记录Session创建
+            self.logger.log_operation(session_id, "SESSION_CREATED", f"user_id: {user_id}")
             # 新Session时自动调用房源重置接口
             # 注意：这里不await，因为这是同步方法，重置会在异步上下文中调用
             return client
@@ -159,6 +164,8 @@ class SessionManager:
         client = self.get_or_create_session(session_id)
         try:
             await client.init_houses()
+            self.logger.log_operation(session_id, "SESSION_INITIALIZED", "房源重置成功")
         except Exception as e:
             # 如果重置失败，记录错误但不阻止继续
             print(f"警告: Session {session_id} 房源重置失败: {e}")
+            self.logger.log_error(session_id, "SESSION_INIT_ERROR", f"房源重置失败: {str(e)}", e)
