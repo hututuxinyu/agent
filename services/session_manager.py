@@ -31,7 +31,7 @@ class SessionManager:
             HouseAPIClient实例
         """
         # 提取user_id
-        user_id = extract_user_id_from_session_id(session_id)
+        user_id = "h00613474"
         
         # 如果是新Session，初始化
         if session_id not in self.sessions:

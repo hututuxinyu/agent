@@ -66,10 +66,15 @@ class AgentService:
 4. **排序支持**：根据用户要求进行排序（价格、面积、地铁距离等）
 
 ## 租房操作识别
-当用户表达租房意图时（如"就租最近的那套"、"我要租这个"），应：
+当用户表达明确的租房意图时（如"我要租这个"、"帮我租"、"确定租"），应：
 1. 从对话历史或查询结果中提取房源ID和平台信息
 2. 自动调用rent_house工具完成租房操作
 3. 确认操作结果并告知用户
+
+当用户询问房源是否可以租时（如"可以租吗？"、"能租吗？"），应：
+1. 先调用get_house_detail确认房源状态（status字段）
+2. 如果房源可租（status="available"），告知用户房源可租，并询问是否需要帮您租赁
+3. 等待用户明确确认后，再调用rent_house工具进行租赁
 
 请始终遵循以上规则，提供专业、准确的租房服务。"""
     
@@ -129,19 +134,27 @@ class AgentService:
     
     def _detect_rent_intent(self, message: str) -> bool:
         """
-        检测用户消息中是否包含租房意图
+        检测用户消息中是否包含明确的租房意图（排除询问性语句）
         
         Args:
             message: 用户消息
         
         Returns:
-            是否包含租房意图
+            是否包含明确的租房意图
         """
-        rent_keywords = [
-            "租", "要租", "就租", "租这个", "租那套", "租最近", "租第一",
-            "租了", "租下", "确定租", "决定租", "选择租"
-        ]
         message_lower = message.lower()
+        
+        # 询问性语句关键词（不应触发自动租房）
+        inquiry_keywords = ["可以租吗", "能租吗", "能租", "可以租", "租吗", "能否租"]
+        if any(keyword in message for keyword in inquiry_keywords):
+            return False
+        
+        # 明确的租房意图关键词
+        rent_keywords = [
+            "要租", "就租", "租这个", "租那套", "租最近", "租第一",
+            "租了", "租下", "确定租", "决定租", "选择租", "帮我租",
+            "帮我办理租房", "办理租房", "我要租", "我想租"
+        ]
         return any(keyword in message for keyword in rent_keywords)
     
     def _resolve_reference(self, message: str, session_id: str) -> str:
@@ -506,28 +519,39 @@ class AgentService:
             if self._detect_rent_intent(message):
                 rent_info = self._extract_rent_info_from_context(session_id, tool_results, messages)
                 if rent_info:
-                    try:
-                        # 调用rent_house工具
-                        rent_result = await TOOL_FUNCTIONS["rent_house"](
-                            client,
-                            house_id=rent_info["house_id"],
-                            listing_platform=rent_info["listing_platform"]
-                        )
-                        # 记录租房操作结果
-                        tool_results.append({
-                            "name": "rent_house",
-                            "success": rent_result.get("success", False),
-                            "output": json.dumps(rent_result.get("data", {}), ensure_ascii=False) if rent_result.get("success") else json.dumps({"error": rent_result.get("error", "未知错误")}, ensure_ascii=False)
-                        })
-                        # 如果租房成功，更新最终回复
-                        if rent_result.get("success"):
-                            final_response = f"已成功租下房源 {rent_info['house_id']}（平台：{rent_info['listing_platform']}）"
-                        else:
-                            final_response = f"租房操作失败：{rent_result.get('error', '未知错误')}"
-                    except Exception as e:
-                        print(f"警告: 自动调用租房工具失败: {e}")
-                        self.logger.log_error(session_id, "AUTO_RENT_ERROR", f"自动调用租房工具失败: {str(e)}", e)
-                        # 继续使用原始回复
+                    # 检查是否是询问性语句
+                    inquiry_keywords = ["可以租吗", "能租吗", "能租", "可以租", "租吗", "能否租"]
+                    is_inquiry = any(keyword in message for keyword in inquiry_keywords)
+                    
+                    if is_inquiry:
+                        # 对于询问性语句，不自动调用rent_house
+                        # 应该先调用get_house_detail确认房源状态，然后询问用户
+                        # 这里由LLM在下一轮对话中处理
+                        pass
+                    else:
+                        # 明确的租房意图，自动调用rent_house
+                        try:
+                            # 调用rent_house工具
+                            rent_result = await TOOL_FUNCTIONS["rent_house"](
+                                client,
+                                house_id=rent_info["house_id"],
+                                listing_platform=rent_info["listing_platform"]
+                            )
+                            # 记录租房操作结果
+                            tool_results.append({
+                                "name": "rent_house",
+                                "success": rent_result.get("success", False),
+                                "output": json.dumps(rent_result.get("data", {}), ensure_ascii=False) if rent_result.get("success") else json.dumps({"error": rent_result.get("error", "未知错误")}, ensure_ascii=False)
+                            })
+                            # 如果租房成功，更新最终回复
+                            if rent_result.get("success"):
+                                final_response = f"已成功租下房源 {rent_info['house_id']}（平台：{rent_info['listing_platform']}）"
+                            else:
+                                final_response = f"租房操作失败：{rent_result.get('error', '未知错误')}"
+                        except Exception as e:
+                            print(f"警告: 自动调用租房工具失败: {e}")
+                            self.logger.log_error(session_id, "AUTO_RENT_ERROR", f"自动调用租房工具失败: {str(e)}", e)
+                            # 继续使用原始回复
             
             # 格式化响应（如果是房源查询，需要JSON格式）
             formatted_response = self._format_response(final_response, tool_results, session_id)
@@ -826,7 +850,9 @@ class AgentService:
         """
         格式化响应
         
-        关键逻辑：如果执行了房源查询工具，response必须是JSON字符串格式
+        关键逻辑：
+        1. 如果执行了房源查询工具，response必须是JSON字符串格式
+        2. 只有在实际调用了rent_house工具且成功时，才返回"已成功租下房源"
         
         Args:
             response: LLM生成的原始回复
@@ -836,6 +862,58 @@ class AgentService:
         Returns:
             格式化后的响应
         """
+        # 检查是否实际调用了rent_house工具
+        has_rent_call = any(
+            result.get("name") == "rent_house" and result.get("success", False)
+            for result in tool_results
+        )
+        
+        # 如果response包含"已成功租下房源"但未实际调用rent_house，需要修正
+        if "已成功租下房源" in response and not has_rent_call:
+            # 检查是否有房源查询结果
+            search_tools = ["search_houses", "get_nearby_houses"]
+            has_search = any(
+                result.get("name") in search_tools
+                for result in tool_results
+            )
+            
+            if has_search:
+                # 如果有查询结果，应该返回查询结果的JSON格式，而不是租房成功消息
+                # 从工具结果中提取房源ID列表
+                house_ids = []
+                for result in tool_results:
+                    if result.get("name") in search_tools and result.get("success"):
+                        extracted_ids = self._extract_house_ids_from_tool_result(result)
+                        house_ids.extend(extracted_ids)
+                
+                house_ids = list(dict.fromkeys(house_ids))[:5]
+                
+                # 尝试从原始回复中提取message，如果没有则使用默认消息
+                message = response.strip()
+                try:
+                    if message.startswith("{") and message.endswith("}"):
+                        parsed = json.loads(message)
+                        if "message" in parsed:
+                            message = parsed["message"]
+                except:
+                    pass
+                
+                # 移除"已成功租下房源"的错误消息
+                if "已成功租下房源" in message:
+                    # 提取房源ID
+                    import re
+                    house_id_match = re.search(r'HF_\d+', message)
+                    if house_id_match:
+                        house_id = house_id_match.group(0)
+                        message = f"为您找到房源 {house_id}，需要我帮您租赁吗？"
+                    else:
+                        message = "为您找到以下符合条件的房源："
+                
+                return json.dumps({
+                    "message": message,
+                    "houses": house_ids
+                }, ensure_ascii=False)
+        
         # 检查是否有房源查询相关的工具调用
         search_tools = ["search_houses", "get_nearby_houses"]
         has_search = any(
