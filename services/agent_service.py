@@ -66,6 +66,7 @@ class AgentService:
                 # 调用LLM
                 llm_response = await self.llm_client.chat_completion(
                     messages=messages,
+                    session_id=session_id,
                     tools=TOOLS_DEFINITION
                 )
                 
@@ -151,6 +152,7 @@ class AgentService:
                 # 再次调用LLM生成最终回复
                 llm_response = await self.llm_client.chat_completion(
                     messages=messages,
+                    session_id=session_id,
                     tools=None  # 不再需要工具
                 )
                 choice = llm_response["choices"][0]
