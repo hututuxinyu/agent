@@ -43,17 +43,64 @@ class SessionManager:
         
         return self.session_clients[session_id]
     
-    def get_messages(self, session_id: str) -> List[Dict[str, str]]:
+    def get_messages(self, session_id: str, max_messages: Optional[int] = None) -> List[Dict[str, str]]:
         """
-        获取Session的对话历史
+        获取Session的对话历史，支持压缩以节省token
         
         Args:
             session_id: 会话ID
+            max_messages: 最大消息数，如果超过则压缩历史
         
         Returns:
             消息列表
         """
-        return self.sessions.get(session_id, [])
+        messages = self.sessions.get(session_id, [])
+        
+        # 如果设置了最大消息数且超过限制，进行压缩
+        if max_messages and len(messages) > max_messages:
+            # 保留system message和最近的对话
+            compressed = []
+            # 保留system message
+            for msg in messages:
+                if msg.get("role") == "system":
+                    compressed.append(msg)
+                    break
+            
+            # 保留最近的N条消息
+            recent_messages = messages[-max_messages:]
+            compressed.extend(recent_messages)
+            return compressed
+        
+        return messages
+    
+    def compress_messages(self, session_id: str, keep_recent: int = 10) -> List[Dict[str, str]]:
+        """
+        压缩对话历史，只保留关键信息
+        
+        Args:
+            session_id: 会话ID
+            keep_recent: 保留最近N轮对话
+        
+        Returns:
+            压缩后的消息列表
+        """
+        if session_id not in self.sessions:
+            return []
+        
+        messages = self.sessions[session_id]
+        compressed = []
+        
+        # 保留system message
+        for msg in messages:
+            if msg.get("role") == "system":
+                compressed.append(msg)
+                break
+        
+        # 保留最近的对话
+        recent_messages = messages[-keep_recent * 2:]  # 每轮包含user和assistant
+        compressed.extend(recent_messages)
+        
+        return compressed
     
     def add_message(self, session_id: str, role: str, content: str):
         """

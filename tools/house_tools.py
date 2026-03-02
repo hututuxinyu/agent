@@ -10,15 +10,15 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "search_houses",
-            "description": "查询可租房源，支持多条件筛选（行政区、商圈、价格、户型、面积、地铁距离等）",
+            "description": "查询可租房源，支持多条件筛选（行政区、商圈、价格、户型、面积、地铁距离等）。这是主要的房源查询工具，应优先使用。如果查询无结果，可以尝试放宽条件（如扩大价格范围、增加区域）重新查询。建议设置page_size为5-10以获取合适的房源数量。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "district": {"type": "string", "description": "行政区，如 海淀、朝阳，多个用逗号分隔"},
+                    "district": {"type": "string", "description": "行政区，如 海淀、朝阳，多个用逗号分隔。如果用户提到区域，必须包含此参数"},
                     "area": {"type": "string", "description": "商圈，如 西二旗、上地，多个用逗号分隔"},
-                    "min_price": {"type": "integer", "description": "最低月租金（元）"},
-                    "max_price": {"type": "integer", "description": "最高月租金（元）"},
-                    "bedrooms": {"type": "string", "description": "卧室数，如 1,2 表示一居或两居"},
+                    "min_price": {"type": "integer", "description": "最低月租金（元）。如果用户提到价格范围，必须设置"},
+                    "max_price": {"type": "integer", "description": "最高月租金（元）。如果用户提到价格范围，必须设置"},
+                    "bedrooms": {"type": "string", "description": "卧室数，如 1,2 表示一居或两居。如果用户提到户型，必须设置"},
                     "rental_type": {"type": "string", "description": "整租 或 合租"},
                     "decoration": {"type": "string", "description": "装修类型，如 精装、简装"},
                     "orientation": {"type": "string", "description": "朝向，如 朝南、南北"},
@@ -27,13 +27,13 @@ TOOLS_DEFINITION = [
                     "max_area": {"type": "integer", "description": "最大面积（平米）"},
                     "subway_line": {"type": "string", "description": "地铁线路，如 13号线"},
                     "subway_station": {"type": "string", "description": "地铁站名，如 车公庄站"},
-                    "max_subway_dist": {"type": "integer", "description": "最大地铁距离（米），近地铁建议800"},
+                    "max_subway_dist": {"type": "integer", "description": "最大地铁距离（米）。重要：用户说'近地铁'时，必须设置为800。默认不限制"},
                     "commute_to_xierqi_max": {"type": "integer", "description": "到西二旗通勤时间上限（分钟）"},
-                    "sort_by": {"type": "string", "description": "排序字段：price/area/subway"},
-                    "sort_order": {"type": "string", "description": "排序顺序：asc/desc"},
-                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"},
-                    "page": {"type": "integer", "description": "页码，默认1"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10，最大10000"}
+                    "sort_by": {"type": "string", "description": "排序字段：price(价格)/area(面积)/subway(地铁距离)。根据用户要求设置，如'按价格从低到高'用price+asc"},
+                    "sort_order": {"type": "string", "description": "排序顺序：asc(升序)/desc(降序)。根据用户要求设置"},
+                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城。如果用户指定平台，必须设置。未指定时建议查询多个平台"},
+                    "page": {"type": "integer", "description": "页码，默认1。如需更多房源，可增加页码"},
+                    "page_size": {"type": "integer", "description": "每页条数，默认10，最大10000。建议设置为5-10以获取合适的候选房源数量"}
                 }
             }
         }
@@ -72,15 +72,15 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "get_nearby_houses",
-            "description": "以地标为圆心，查询在指定距离内的可租房源",
+            "description": "以地标为圆心，查询在指定距离内的可租房源。适用于用户提到具体地点（如地铁站、公司、商圈）附近的房源查询。使用前应先通过search_landmarks获取地标ID。如果查询无结果，可以增大max_distance重新查询。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "landmark_id": {"type": "string", "description": "地标ID或地标名称"},
-                    "max_distance": {"type": "number", "description": "最大直线距离（米），默认2000"},
+                    "landmark_id": {"type": "string", "description": "地标ID或地标名称。必须先通过search_landmarks获取地标ID"},
+                    "max_distance": {"type": "number", "description": "最大直线距离（米），默认2000。如果查询无结果，可以增大此值"},
                     "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"},
                     "page": {"type": "integer", "description": "页码，默认1"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10"}
+                    "page_size": {"type": "integer", "description": "每页条数，默认10，建议设置为5-10"}
                 },
                 "required": ["landmark_id"]
             }
