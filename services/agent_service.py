@@ -66,10 +66,18 @@ class AgentService:
 4. **排序支持**：根据用户要求进行排序（价格、面积、地铁距离等）
 
 ## 租房操作识别
-当用户表达租房意图时（如"就租最近的那套"、"我要租这个"），应：
+当用户表达租房意图时（如"就租最近的那套"、"我要租这个"、"可以租吗"、"能租吗"等），应：
 1. 从对话历史或查询结果中提取房源ID和平台信息
 2. 自动调用rent_house工具完成租房操作
 3. 确认操作结果并告知用户
+
+## 租房回复规则（重要）
+**严格禁止**：在没有调用rent_house工具的情况下，直接回复"已成功租下房源"、"租下"等表示租房成功的信息。
+
+**必须遵守**：
+- 只有在调用rent_house工具并成功返回后，才能回复"已成功租下房源"等成功信息
+- 当用户表达租房意图时，必须调用rent_house工具
+- 如果无法提取房源信息或租房工具调用失败，应明确告知用户错误原因，而不是错误地回复成功
 
 请始终遵循以上规则，提供专业、准确的租房服务。"""
     
@@ -139,7 +147,9 @@ class AgentService:
         """
         rent_keywords = [
             "租", "要租", "就租", "租这个", "租那套", "租最近", "租第一",
-            "租了", "租下", "确定租", "决定租", "选择租"
+            "租了", "租下", "确定租", "决定租", "选择租",
+            "可以租吗", "能租吗", "想租", "我要租", "帮我租",
+            "租下来", "租它", "租一套", "租一间"
         ]
         message_lower = message.lower()
         return any(keyword in message for keyword in rent_keywords)
@@ -216,30 +226,69 @@ class AgentService:
         Returns:
             包含house_id和listing_platform的字典，如果无法提取则返回None
         """
-        # 1. 从最近的查询结果中提取房源ID
+        import re
         house_id = None
         listing_platform = None
         
-        # 从工具结果中查找最近的房源查询结果
-        search_tools = ["search_houses", "get_nearby_houses"]
+        # 1. 优先从get_house_detail工具结果中提取房源ID和平台信息
         for result in reversed(tool_results):  # 从最新开始查找
-            if result.get("name") in search_tools and result.get("success"):
-                house_ids = self._extract_house_ids_from_tool_result(result)
-                if house_ids:
-                    # 取第一套房源（通常是用户最可能想租的）
-                    house_id = house_ids[0]
-                    # 尝试从工具参数中提取平台信息
-                    try:
-                        output_data = json.loads(result.get("output", "{}"))
-                        # 查找平台信息（可能在原始请求参数中）
-                        # 这里我们尝试从对话历史中查找
-                        break
-                    except:
-                        pass
+            if result.get("name") == "get_house_detail" and result.get("success"):
+                try:
+                    output_data = json.loads(result.get("output", "{}"))
+                    # 从详情结果中提取房源ID
+                    if isinstance(output_data, dict):
+                        house_id = (
+                            output_data.get("house_id") or 
+                            output_data.get("id") or 
+                            output_data.get("houseId")
+                        )
+                        # 从详情结果中提取平台信息
+                        listing_platform = output_data.get("listing_platform")
+                        if house_id:
+                            house_id = str(house_id)
+                            # 验证房源ID格式
+                            if house_id.startswith("HF_"):
+                                break
+                except:
+                    pass
         
-        # 2. 从对话历史中提取房源ID和平台信息
+        # 2. 从用户消息中直接提取房源ID（如"HF_277"）
         if not house_id:
-            import re
+            # 从最新的用户消息中查找
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    # 尝试匹配HF_开头的ID
+                    hf_match = re.search(r'HF_\d+', content)
+                    if hf_match:
+                        house_id = hf_match.group(0)
+                        break
+        
+        # 3. 从最近的查询结果中提取房源ID（search_houses或get_nearby_houses）
+        if not house_id:
+            search_tools = ["search_houses", "get_nearby_houses"]
+            for result in reversed(tool_results):  # 从最新开始查找
+                if result.get("name") in search_tools and result.get("success"):
+                    house_ids = self._extract_house_ids_from_tool_result(result)
+                    if house_ids:
+                        # 取第一套房源（通常是用户最可能想租的）
+                        house_id = house_ids[0]
+                        # 尝试从工具结果中提取平台信息
+                        try:
+                            output_data = json.loads(result.get("output", "{}"))
+                            # 从items中查找平台信息
+                            if isinstance(output_data, dict):
+                                items = output_data.get("items", [])
+                                if items and isinstance(items, list) and len(items) > 0:
+                                    first_item = items[0]
+                                    if isinstance(first_item, dict):
+                                        listing_platform = first_item.get("listing_platform")
+                        except:
+                            pass
+                        break
+        
+        # 4. 从对话历史中提取房源ID和平台信息
+        if not house_id:
             # 从最近的助手消息中查找房源ID
             for msg in reversed(messages):
                 if msg.get("role") == "assistant":
@@ -261,21 +310,22 @@ class AgentService:
                     if house_id:
                         break
         
-        # 3. 从查询状态中获取最近房源
+        # 5. 从查询状态中获取最近房源
         query_state = self.session_query_states.get(session_id, {})
         if not house_id and query_state.get("recent_houses"):
             house_id = query_state["recent_houses"][0] if isinstance(query_state["recent_houses"][0], str) else query_state["recent_houses"][0].get("house_id")
         
-        # 4. 从对话历史中提取平台信息
-        platform_keywords = ["链家", "安居客", "58同城"]
-        for msg in reversed(messages):
-            content = msg.get("content", "")
-            for platform in platform_keywords:
-                if platform in content:
-                    listing_platform = platform
+        # 6. 从对话历史中提取平台信息（如果还没有找到）
+        if not listing_platform:
+            platform_keywords = ["链家", "安居客", "58同城"]
+            for msg in reversed(messages):
+                content = msg.get("content", "")
+                for platform in platform_keywords:
+                    if platform in content:
+                        listing_platform = platform
+                        break
+                if listing_platform:
                     break
-            if listing_platform:
-                break
         
         # 如果没有找到平台，默认使用安居客
         if house_id and not listing_platform:
@@ -528,6 +578,49 @@ class AgentService:
                         print(f"警告: 自动调用租房工具失败: {e}")
                         self.logger.log_error(session_id, "AUTO_RENT_ERROR", f"自动调用租房工具失败: {str(e)}", e)
                         # 继续使用原始回复
+            
+            # 检查回复是否包含租房成功信息但没有rent_house调用，强制触发自动租房逻辑
+            rent_success_keywords = ["已成功租下房源", "租下", "成功租", "已租", "租好了", "租到了"]
+            has_rent_success_keyword = any(keyword in final_response for keyword in rent_success_keywords)
+            has_rent_house_call = any(
+                result.get("name") == "rent_house" 
+                for result in tool_results
+            )
+            
+            if has_rent_success_keyword and not has_rent_house_call:
+                # 检测到租房意图，尝试自动租房
+                if self._detect_rent_intent(message):
+                    rent_info = self._extract_rent_info_from_context(session_id, tool_results, messages)
+                    if rent_info:
+                        try:
+                            # 调用rent_house工具
+                            rent_result = await TOOL_FUNCTIONS["rent_house"](
+                                client,
+                                house_id=rent_info["house_id"],
+                                listing_platform=rent_info["listing_platform"]
+                            )
+                            # 记录租房操作结果
+                            tool_results.append({
+                                "name": "rent_house",
+                                "success": rent_result.get("success", False),
+                                "output": json.dumps(rent_result.get("data", {}), ensure_ascii=False) if rent_result.get("success") else json.dumps({"error": rent_result.get("error", "未知错误")}, ensure_ascii=False)
+                            })
+                            # 如果租房成功，更新最终回复
+                            if rent_result.get("success"):
+                                final_response = f"已成功租下房源 {rent_info['house_id']}（平台：{rent_info['listing_platform']}）"
+                            else:
+                                final_response = f"租房操作失败：{rent_result.get('error', '未知错误')}"
+                        except Exception as e:
+                            print(f"警告: 强制触发自动租房失败: {e}")
+                            self.logger.log_error(session_id, "FORCE_RENT_ERROR", f"强制触发自动租房失败: {str(e)}", e)
+                            # 如果自动租房失败，拒绝原始回复
+                            final_response = "无法完成租房操作：无法提取房源信息或租房工具调用失败。请先选择房源并确保房源信息完整。"
+                    else:
+                        # 无法提取房源信息，拒绝原始回复
+                        final_response = "无法完成租房操作：无法提取房源信息。请先选择房源并确保房源信息完整。"
+                else:
+                    # 没有检测到租房意图，但回复包含租房成功信息，拒绝回复
+                    final_response = "需要先调用rent_house工具才能完成租房操作。请先选择房源并调用租房工具。"
             
             # 格式化响应（如果是房源查询，需要JSON格式）
             formatted_response = self._format_response(final_response, tool_results, session_id)
@@ -836,6 +929,18 @@ class AgentService:
         Returns:
             格式化后的响应
         """
+        # 验证租房回复：如果回复包含租房成功信息但没有rent_house工具调用，拒绝回复并提示错误
+        rent_success_keywords = ["已成功租下房源", "租下", "成功租", "已租", "租好了", "租到了"]
+        has_rent_success_keyword = any(keyword in response for keyword in rent_success_keywords)
+        has_rent_house_call = any(
+            result.get("name") == "rent_house" 
+            for result in tool_results
+        )
+        
+        if has_rent_success_keyword and not has_rent_house_call:
+            # 拒绝回复，提示错误
+            return "需要先调用rent_house工具才能完成租房操作。请先选择房源并调用租房工具。"
+        
         # 检查是否有房源查询相关的工具调用
         search_tools = ["search_houses", "get_nearby_houses"]
         has_search = any(
