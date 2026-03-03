@@ -10,30 +10,30 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "search_houses",
-            "description": "查询可租房源，支持多条件筛选（行政区、商圈、价格、户型、面积、地铁距离等）。这是主要的房源查询工具，应优先使用。如果查询无结果，可以尝试放宽条件（如扩大价格范围、增加区域）重新查询。建议设置page_size为5-10以获取合适的房源数量。",
+            "description": "查询可租房源，支持多条件筛选。优先使用。无结果时可放宽条件重试。page_size建议5-10。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "district": {"type": "string", "description": "行政区，如 海淀、朝阳，多个用逗号分隔。如果用户提到区域，必须包含此参数"},
-                    "area": {"type": "string", "description": "商圈，如 西二旗、上地，多个用逗号分隔"},
-                    "min_price": {"type": "integer", "description": "最低月租金（元）。如果用户提到价格范围，必须设置"},
-                    "max_price": {"type": "integer", "description": "最高月租金（元）。如果用户提到价格范围，必须设置"},
-                    "bedrooms": {"type": "string", "description": "卧室数，如 1,2 表示一居或两居。如果用户提到户型，必须设置"},
+                    "district": {"type": "string", "description": "行政区，如 海淀、朝阳，多个用逗号分隔"},
+                    "area": {"type": "string", "description": "商圈，如 西二旗、上地"},
+                    "min_price": {"type": "integer", "description": "最低月租金（元）"},
+                    "max_price": {"type": "integer", "description": "最高月租金（元）"},
+                    "bedrooms": {"type": "string", "description": "卧室数，如 1,2"},
                     "rental_type": {"type": "string", "description": "整租 或 合租"},
-                    "decoration": {"type": "string", "description": "装修类型，如 精装、简装"},
-                    "orientation": {"type": "string", "description": "朝向，如 朝南、南北"},
+                    "decoration": {"type": "string", "description": "装修类型"},
+                    "orientation": {"type": "string", "description": "朝向"},
                     "elevator": {"type": "string", "description": "是否有电梯：true/false"},
                     "min_area": {"type": "integer", "description": "最小面积（平米）"},
                     "max_area": {"type": "integer", "description": "最大面积（平米）"},
-                    "subway_line": {"type": "string", "description": "地铁线路，如 13号线"},
-                    "subway_station": {"type": "string", "description": "地铁站名，如 车公庄站"},
-                    "max_subway_dist": {"type": "integer", "description": "最大地铁距离（米）。重要：用户说'近地铁'时，必须设置为800。默认不限制"},
+                    "subway_line": {"type": "string", "description": "地铁线路"},
+                    "subway_station": {"type": "string", "description": "地铁站名"},
+                    "max_subway_dist": {"type": "integer", "description": "最大地铁距离（米），近地铁设为800"},
                     "commute_to_xierqi_max": {"type": "integer", "description": "到西二旗通勤时间上限（分钟）"},
-                    "sort_by": {"type": "string", "description": "排序字段：price(价格)/area(面积)/subway(地铁距离)。根据用户要求设置，如'按价格从低到高'用price+asc"},
-                    "sort_order": {"type": "string", "description": "排序顺序：asc(升序)/desc(降序)。根据用户要求设置"},
-                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城。如果用户指定平台，必须设置。未指定时建议查询多个平台"},
-                    "page": {"type": "integer", "description": "页码，默认1。如需更多房源，可增加页码"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10，最大10000。建议设置为5-10以获取合适的候选房源数量"}
+                    "sort_by": {"type": "string", "description": "排序：price/area/subway"},
+                    "sort_order": {"type": "string", "description": "排序顺序：asc/desc"},
+                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"},
+                    "page": {"type": "integer", "description": "页码，默认1"},
+                    "page_size": {"type": "integer", "description": "每页条数，建议5-10"}
                 }
             }
         }
@@ -42,11 +42,11 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "get_house_detail",
-            "description": "根据房源ID获取房源详情",
+            "description": "获取房源详情",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "house_id": {"type": "string", "description": "房源ID，如 HF_2001"}
+                    "house_id": {"type": "string", "description": "房源ID"}
                 },
                 "required": ["house_id"]
             }
@@ -56,13 +56,13 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "search_landmarks",
-            "description": "搜索地标（地铁站、公司、商圈等），支持关键词模糊搜索",
+            "description": "搜索地标（地铁站、公司、商圈等）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "q": {"type": "string", "description": "搜索关键词，如 西二旗、百度"},
-                    "category": {"type": "string", "description": "地标类别：subway(地铁)/company(公司)/landmark(商圈)"},
-                    "district": {"type": "string", "description": "行政区，如 海淀、朝阳"}
+                    "q": {"type": "string", "description": "搜索关键词"},
+                    "category": {"type": "string", "description": "类别：subway/company/landmark"},
+                    "district": {"type": "string", "description": "行政区"}
                 },
                 "required": ["q"]
             }
@@ -72,15 +72,15 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "get_nearby_houses",
-            "description": "以地标为圆心，查询在指定距离内的可租房源。适用于用户提到具体地点（如地铁站、公司、商圈）附近的房源查询。使用前应先通过search_landmarks获取地标ID。如果查询无结果，可以增大max_distance重新查询。",
+            "description": "查询地标附近的可租房源。使用前需通过search_landmarks获取地标ID。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "landmark_id": {"type": "string", "description": "地标ID或地标名称。必须先通过search_landmarks获取地标ID"},
-                    "max_distance": {"type": "number", "description": "最大直线距离（米），默认2000。如果查询无结果，可以增大此值"},
+                    "landmark_id": {"type": "string", "description": "地标ID"},
+                    "max_distance": {"type": "number", "description": "最大距离（米），默认2000"},
                     "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"},
                     "page": {"type": "integer", "description": "页码，默认1"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10，建议设置为5-10"}
+                    "page_size": {"type": "integer", "description": "每页条数，建议5-10"}
                 },
                 "required": ["landmark_id"]
             }
@@ -90,13 +90,13 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "get_nearby_landmarks",
-            "description": "查询某小区周边某类地标（商超、公园等），按距离排序。用于回答「附近有没有商场/公园」等周边配套问题。",
+            "description": "查询小区周边地标（商超、公园等）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "community": {"type": "string", "description": "小区名称，如 保利居、中海阁"},
-                    "type": {"type": "string", "description": "地标类型，如 商超、公园"},
-                    "max_distance_m": {"type": "number", "description": "最大直线距离（米），默认3000。用于查商超、公园等周边配套"}
+                    "community": {"type": "string", "description": "小区名称"},
+                    "type": {"type": "string", "description": "地标类型"},
+                    "max_distance_m": {"type": "number", "description": "最大距离（米），默认3000"}
                 },
                 "required": ["community"]
             }
@@ -106,12 +106,12 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "rent_house",
-            "description": "租房操作，将房源设为已租状态",
+            "description": "租房操作",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "house_id": {"type": "string", "description": "房源ID，如 HF_2001"},
-                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"}
+                    "house_id": {"type": "string", "description": "房源ID"},
+                    "listing_platform": {"type": "string", "description": "挂牌平台"}
                 },
                 "required": ["house_id", "listing_platform"]
             }
@@ -121,12 +121,12 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "terminate_rent",
-            "description": "退租操作，将房源恢复为可租状态",
+            "description": "退租操作",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "house_id": {"type": "string", "description": "房源ID，如 HF_2001"},
-                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"}
+                    "house_id": {"type": "string", "description": "房源ID"},
+                    "listing_platform": {"type": "string", "description": "挂牌平台"}
                 },
                 "required": ["house_id", "listing_platform"]
             }
@@ -136,12 +136,12 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "offline_house",
-            "description": "下架操作，将房源设为下架状态",
+            "description": "下架操作",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "house_id": {"type": "string", "description": "房源ID，如 HF_2001"},
-                    "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"}
+                    "house_id": {"type": "string", "description": "房源ID"},
+                    "listing_platform": {"type": "string", "description": "挂牌平台"}
                 },
                 "required": ["house_id", "listing_platform"]
             }
@@ -151,7 +151,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "get_house_stats",
-            "description": "获取房源统计信息（总套数、按状态/行政区/户型分布、价格区间等）",
+            "description": "获取房源统计信息",
             "parameters": {
                 "type": "object",
                 "properties": {}

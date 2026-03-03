@@ -101,8 +101,91 @@ class SessionManager:
                 compressed.append(msg)
                 break
         
-        # 保留最近的对话
-        recent_messages = messages[-keep_recent * 2:]  # 每轮包含user和assistant
+        # 分离最近的消息和更早的消息
+        recent_count = keep_recent * 2  # 每轮包含user和assistant
+        recent_messages = messages[-recent_count:] if len(messages) > recent_count else messages
+        older_messages = messages[:-recent_count] if len(messages) > recent_count else []
+        
+        # 压缩更早的消息，只保留关键信息
+        for msg in older_messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            if role == "tool":
+                # 工具消息：只保留工具名称和关键结果（房源ID列表）
+                try:
+                    import json
+                    data = json.loads(content)
+                    # 尝试提取房源ID
+                    house_ids = []
+                    if isinstance(data, dict):
+                        items = data.get("items", [])
+                        if items:
+                            for item in items:
+                                if isinstance(item, dict):
+                                    house_id = item.get("house_id") or item.get("id") or item.get("houseId")
+                                    if house_id:
+                                        house_ids.append(str(house_id))
+                    
+                    if house_ids:
+                        compressed.append({
+                            "role": "tool",
+                            "tool_call_id": msg.get("tool_call_id", ""),
+                            "content": json.dumps({"house_ids": house_ids[:5]}, ensure_ascii=False)
+                        })
+                    else:
+                        # 如果没有房源ID，只保留成功/失败状态
+                        success = data.get("total", 0) > 0 if isinstance(data, dict) else False
+                        compressed.append({
+                            "role": "tool",
+                            "tool_call_id": msg.get("tool_call_id", ""),
+                            "content": json.dumps({"success": success}, ensure_ascii=False)
+                        })
+                except:
+                    # 解析失败，保留原始内容但截断
+                    compressed.append({
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", ""),
+                        "content": content[:200] if len(content) > 200 else content
+                    })
+            elif role == "assistant":
+                # Assistant消息：如果包含JSON格式的房源查询结果，压缩为摘要
+                try:
+                    import json
+                    if content.strip().startswith("{") and content.strip().endswith("}"):
+                        parsed = json.loads(content)
+                        if "houses" in parsed:
+                            house_ids = parsed.get("houses", [])
+                            if house_ids:
+                                # 压缩为摘要
+                                compressed.append({
+                                    "role": "assistant",
+                                    "content": json.dumps({
+                                        "message": parsed.get("message", "")[:50],
+                                        "houses": house_ids[:5]
+                                    }, ensure_ascii=False)
+                                })
+                            else:
+                                compressed.append(msg)
+                        else:
+                            compressed.append(msg)
+                    else:
+                        # 非JSON格式，保留但截断
+                        compressed.append({
+                            "role": "assistant",
+                            "content": content[:300] if len(content) > 300 else content
+                        })
+                except:
+                    # 解析失败，保留但截断
+                    compressed.append({
+                        "role": "assistant",
+                        "content": content[:300] if len(content) > 300 else content
+                    })
+            elif role == "user":
+                # 用户消息：保留完整内容
+                compressed.append(msg)
+        
+        # 保留最近的对话（完整保留）
         compressed.extend(recent_messages)
         
         return compressed

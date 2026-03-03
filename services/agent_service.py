@@ -24,7 +24,7 @@ class AgentService:
         self.llm_client = LLMClient(model_ip)
         self.session_manager = session_manager
         self.logger = LoggerService()
-        self.max_iterations = 10  # 最大工具调用轮数
+        self.max_iterations = 6  # 最大工具调用轮数
         self.system_prompt = self._get_system_prompt()
         # 存储最近查询的房源信息，用于租房操作
         self.recent_house_results: Dict[str, List[Dict[str, Any]]] = {}
@@ -112,16 +112,14 @@ class AgentService:
             items = data["data"]["items"]
         
         compressed_items = []
-        for item in items[:10]:  # 最多保留10条
+        for item in items[:5]:  # 最多保留5条
             if isinstance(item, dict):
                 compressed_item = {
                     "house_id": item.get("house_id") or item.get("id") or item.get("houseId"),
                     "price": item.get("price"),
-                    "area": item.get("area"),
-                    "bedrooms": item.get("bedrooms"),
-                    "district": item.get("district"),
                     "subway_distance": item.get("subway_distance"),
-                    "listing_platform": item.get("listing_platform")
+                    "bedrooms": item.get("bedrooms"),
+                    "district": item.get("district")
                 }
                 # 移除None值
                 compressed_item = {k: v for k, v in compressed_item.items() if v is not None}
@@ -378,8 +376,8 @@ class AgentService:
             self.session_manager.add_message(session_id, "user", resolved_message)
             
             # 获取对话历史（限制长度以节省token）
-            # 保留system message和最近20条消息（约10轮对话）
-            messages = self.session_manager.get_messages(session_id, max_messages=20)
+            # 保留system message和最近12条消息（约6轮对话）
+            messages = self.session_manager.get_messages(session_id, max_messages=12)
             
             # 如果是首次对话或新session，添加system prompt
             if not messages or all(msg.get("role") != "system" for msg in messages):
@@ -389,8 +387,8 @@ class AgentService:
                 })
             
             # 如果消息仍然过多，进一步压缩
-            if len(messages) > 25:
-                messages = self.session_manager.compress_messages(session_id, keep_recent=8)
+            if len(messages) > 15:
+                messages = self.session_manager.compress_messages(session_id, keep_recent=5)
                 # 确保system prompt存在
                 if not any(msg.get("role") == "system" for msg in messages):
                     messages.insert(0, {
@@ -401,8 +399,9 @@ class AgentService:
             # 多轮工具调用循环
             iteration = 0
             final_response = None
+            should_terminate = False
             
-            while iteration < self.max_iterations:
+            while iteration < self.max_iterations and not should_terminate:
                 iteration += 1
                 
                 # 调用LLM
@@ -482,6 +481,21 @@ class AgentService:
                                 # 压缩工具结果，只保留关键信息
                                 compressed_data = self._compress_search_result(data)
                                 tool_output = json.dumps(compressed_data, ensure_ascii=False)
+                            elif tool_name == "get_house_detail":
+                                # 压缩房源详情，只保留关键字段
+                                if isinstance(data, dict):
+                                    compressed_detail = {
+                                        "house_id": data.get("house_id") or data.get("id") or data.get("houseId"),
+                                        "price": data.get("price"),
+                                        "subway_distance": data.get("subway_distance"),
+                                        "bedrooms": data.get("bedrooms"),
+                                        "district": data.get("district"),
+                                        "listing_platform": data.get("listing_platform")
+                                    }
+                                    compressed_detail = {k: v for k, v in compressed_detail.items() if v is not None}
+                                    tool_output = json.dumps(compressed_detail, ensure_ascii=False)
+                                else:
+                                    tool_output = json.dumps(data, ensure_ascii=False)
                             else:
                                 # 其他工具保持原始结构
                                 tool_output = json.dumps(data, ensure_ascii=False)
@@ -540,6 +554,21 @@ class AgentService:
                 
                 # 更新查询状态（用于多轮对话上下文理解）
                 self._update_query_state(session_id, tool_results)
+                
+                # 智能终止机制：如果查询到≥5套房源，可以提前终止
+                search_tools = ["search_houses", "get_nearby_houses"]
+                for result in tool_results:
+                    if result.get("name") in search_tools and result.get("success"):
+                        house_ids = self._extract_house_ids_from_tool_result(result)
+                        if len(house_ids) >= 5:
+                            # 查询到足够房源，提前终止循环
+                            should_terminate = True
+                            break
+                
+                # 检查是否已完成租房操作
+                if any(result.get("name") == "rent_house" and result.get("success") for result in tool_results):
+                    # 已完成租房操作，提前终止
+                    should_terminate = True
             
             # 如果达到最大迭代次数，使用最后一次的回复
             if final_response is None:
