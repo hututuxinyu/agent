@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from services.agent_service import AgentService
 from services.session_manager import SessionManager
+import tools.house_tools
 
 
 # Mock工具查询结果数据
@@ -132,22 +133,27 @@ async def test_output_format_with_houses():
     agent_service = AgentService("127.0.0.1", session_manager)
     session_id = "TEST-001"
     
+    # Mock工具函数
+    async def mock_search_houses(client, **kwargs):
+        return {
+            "success": True,
+            "data": MOCK_SEARCH_RESULT_WITH_HOUSES
+        }
+    
     # Mock LLM客户端
     with patch.object(agent_service.llm_client, 'chat_completion', new_callable=AsyncMock) as mock_llm:
-        # 第一轮：LLM调用工具
-        mock_llm.return_value = create_mock_llm_response_with_tool_call(
-            "search_houses",
-            {"district": "海淀", "bedrooms": "2", "max_subway_dist": 800, "page_size": 10}
-        )
-        
-        # Mock工具函数
-        with patch('tools.house_tools.search_houses', new_callable=AsyncMock) as mock_search:
-            mock_search.return_value = {
-                "success": True,
-                "data": MOCK_SEARCH_RESULT_WITH_HOUSES
-            }
-            
-            # 第二轮：LLM生成最终回复
+        with patch('tools.house_tools.TOOL_FUNCTIONS', {
+            "search_houses": mock_search_houses,
+            "get_house_detail": tools.house_tools.get_house_detail,
+            "search_landmarks": tools.house_tools.search_landmarks,
+            "get_nearby_houses": tools.house_tools.get_nearby_houses,
+            "get_nearby_landmarks": tools.house_tools.get_nearby_landmarks,
+            "rent_house": tools.house_tools.rent_house,
+            "terminate_rent": tools.house_tools.terminate_rent,
+            "offline_house": tools.house_tools.offline_house,
+            "get_house_stats": tools.house_tools.get_house_stats,
+        }):
+            # LLM响应：第一轮调用工具，第二轮生成回复
             mock_llm.side_effect = [
                 create_mock_llm_response_with_tool_call(
                     "search_houses",
