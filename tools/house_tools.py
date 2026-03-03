@@ -33,7 +33,7 @@ TOOLS_DEFINITION = [
                     "sort_order": {"type": "string", "description": "排序顺序：asc(升序)/desc(降序)。根据用户要求设置"},
                     "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城。如果用户指定平台，必须设置。未指定时建议查询多个平台"},
                     "page": {"type": "integer", "description": "页码，默认1。如需更多房源，可增加页码"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10，最大10000。建议设置为5-10以获取合适的候选房源数量"}
+                    "page_size": {"type": "integer", "description": "每页条数，默认5，最大10000。建议设置为5以获取合适的候选房源数量"}
                 }
             }
         }
@@ -80,7 +80,7 @@ TOOLS_DEFINITION = [
                     "max_distance": {"type": "number", "description": "最大直线距离（米），默认2000。如果查询无结果，可以增大此值"},
                     "listing_platform": {"type": "string", "description": "挂牌平台：链家/安居客/58同城"},
                     "page": {"type": "integer", "description": "页码，默认1"},
-                    "page_size": {"type": "integer", "description": "每页条数，默认10，建议设置为5-10"}
+                    "page_size": {"type": "integer", "description": "每页条数，默认5，建议设置为5"}
                 },
                 "required": ["landmark_id"]
             }

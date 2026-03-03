@@ -24,12 +24,18 @@ class AgentService:
         self.llm_client = LLMClient(model_ip)
         self.session_manager = session_manager
         self.logger = LoggerService()
-        self.max_iterations = 10  # 最大工具调用轮数
+        self.max_iterations = 5  # 最大工具调用轮数（从10减少到5）
         self.system_prompt = self._get_system_prompt()
         # 存储最近查询的房源信息，用于租房操作
         self.recent_house_results: Dict[str, List[Dict[str, Any]]] = {}
         # 存储每个session的查询状态，用于多轮对话上下文理解
         self.session_query_states: Dict[str, Dict[str, Any]] = {}
+        # 存储每个session的工具定义是否已传递（用于工具定义缓存优化）
+        self.session_tools_introduced: Dict[str, bool] = {}
+        # 存储每个session的系统prompt是否已添加（用于系统prompt缓存优化）
+        self.session_system_prompt_added: Dict[str, bool] = {}
+        # 查询结果缓存（在同一session内复用相同查询条件的结果）
+        self.query_cache: Dict[str, Dict[str, Any]] = {}
     
     def _get_system_prompt(self) -> str:
         """
@@ -112,7 +118,7 @@ class AgentService:
             items = data["data"]["items"]
         
         compressed_items = []
-        for item in items[:10]:  # 最多保留10条
+        for item in items[:5]:  # 最多保留5条（从10减少到5）
             if isinstance(item, dict):
                 compressed_item = {
                     "house_id": item.get("house_id") or item.get("id") or item.get("houseId"),
@@ -153,6 +159,119 @@ class AgentService:
         ]
         message_lower = message.lower()
         return any(keyword in message for keyword in rent_keywords)
+    
+    def _should_skip_llm(self, message: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        规则引擎：判断简单查询任务是否可以直接处理，跳过LLM推理
+        
+        Args:
+            message: 用户消息
+            session_id: 会话ID
+        
+        Returns:
+            如果可以跳过LLM，返回包含工具名称和参数的字典；否则返回None
+        """
+        import re
+        
+        message_lower = message.lower()
+        
+        # 1. 简单查询识别：识别明确的查询条件
+        # 检查是否包含明确的查询关键词（"找"、"查"、"搜索"、"看看"等）
+        query_keywords = ["找", "查", "搜索", "看看", "有没有", "推荐", "筛选"]
+        is_query = any(keyword in message for keyword in query_keywords)
+        
+        if not is_query:
+            # 如果不是查询意图，检查是否是租房意图
+            if self._detect_rent_intent(message):
+                # 租房意图：尝试从上下文提取房源信息并直接调用
+                query_state = self.session_query_states.get(session_id, {})
+                recent_houses = query_state.get("recent_houses", [])
+                if recent_houses:
+                    house_id = recent_houses[0] if isinstance(recent_houses[0], str) else recent_houses[0].get("house_id")
+                    if house_id:
+                        return {
+                            "tool_name": "rent_house",
+                            "tool_args": {
+                                "house_id": house_id,
+                                "listing_platform": "安居客"  # 默认平台
+                            }
+                        }
+            return None
+        
+        # 2. 提取查询条件
+        tool_args = {}
+        
+        # 提取区域（行政区）
+        districts = ["海淀", "朝阳", "西城", "东城", "丰台", "石景山", "通州", "昌平", "大兴", "房山", "顺义", "门头沟", "平谷", "怀柔", "密云", "延庆"]
+        for district in districts:
+            if district in message:
+                tool_args["district"] = district
+                break
+        
+        # 提取商圈（如果提到具体商圈）
+        areas = ["西二旗", "上地", "中关村", "望京", "国贸", "三里屯", "五道口", "回龙观", "天通苑"]
+        for area in areas:
+            if area in message:
+                tool_args["area"] = area
+                break
+        
+        # 提取价格范围
+        price_patterns = [
+            (r'(\d+)到(\d+)元', lambda m: (int(m.group(1)), int(m.group(2)))),
+            (r'(\d+)-(\d+)元', lambda m: (int(m.group(1)), int(m.group(2)))),
+            (r'(\d+)~(\d+)元', lambda m: (int(m.group(1)), int(m.group(2)))),
+            (r'(\d+)至(\d+)元', lambda m: (int(m.group(1)), int(m.group(2)))),
+            (r'(\d+)万', lambda m: (int(m.group(1)) * 10000, int(m.group(1)) * 10000 + 5000)),
+            (r'低于(\d+)', lambda m: (0, int(m.group(1)))),
+            (r'高于(\d+)', lambda m: (int(m.group(1)), 999999)),
+            (r'(\d+)以下', lambda m: (0, int(m.group(1)))),
+            (r'(\d+)以上', lambda m: (int(m.group(1)), 999999)),
+        ]
+        for pattern, extractor in price_patterns:
+            match = re.search(pattern, message)
+            if match:
+                min_price, max_price = extractor(match)
+                tool_args["min_price"] = min_price
+                tool_args["max_price"] = max_price
+                break
+        
+        # 提取户型
+        bedroom_patterns = [
+            (r'一居|1居|一室', "1"),
+            (r'两居|2居|二居|两室|二室', "2"),
+            (r'三居|3居|三室', "3"),
+            (r'四居|4居|四室', "4"),
+        ]
+        for pattern, bedrooms in bedroom_patterns:
+            if re.search(pattern, message):
+                tool_args["bedrooms"] = bedrooms
+                break
+        
+        # 提取地铁距离
+        if "近地铁" in message or "地铁附近" in message or "地铁旁" in message:
+            tool_args["max_subway_dist"] = 800
+        
+        # 提取平台
+        if "链家" in message:
+            tool_args["listing_platform"] = "链家"
+        elif "58同城" in message or "58" in message:
+            tool_args["listing_platform"] = "58同城"
+        elif "安居客" in message:
+            tool_args["listing_platform"] = "安居客"
+        
+        # 3. 判断是否可以直接调用工具
+        # 如果至少有一个明确的查询条件（区域、价格、户型、地铁距离），可以跳过LLM
+        has_clear_condition = any(key in tool_args for key in ["district", "min_price", "bedrooms", "max_subway_dist", "area"])
+        
+        if has_clear_condition:
+            # 设置默认page_size为5
+            tool_args["page_size"] = 5
+            return {
+                "tool_name": "search_houses",
+                "tool_args": tool_args
+            }
+        
+        return None
     
     def _resolve_reference(self, message: str, session_id: str) -> str:
         """
@@ -378,25 +497,122 @@ class AgentService:
             self.session_manager.add_message(session_id, "user", resolved_message)
             
             # 获取对话历史（限制长度以节省token）
-            # 保留system message和最近20条消息（约10轮对话）
-            messages = self.session_manager.get_messages(session_id, max_messages=20)
+            # 保留system message和最近12条消息（约6轮对话，从20减少到12）
+            messages = self.session_manager.get_messages(session_id, max_messages=12)
             
-            # 如果是首次对话或新session，添加system prompt
-            if not messages or all(msg.get("role") != "system" for msg in messages):
+            # 系统prompt缓存：只在首次会话时添加，后续不再添加
+            if not self.session_system_prompt_added.get(session_id, False):
+                # 首次会话，添加system prompt
                 messages.insert(0, {
                     "role": "system",
                     "content": self.system_prompt
                 })
+                self.session_system_prompt_added[session_id] = True
+            # 后续会话不再添加system prompt（即使消息中没有system消息也不添加）
             
             # 如果消息仍然过多，进一步压缩
-            if len(messages) > 25:
-                messages = self.session_manager.compress_messages(session_id, keep_recent=8)
-                # 确保system prompt存在
-                if not any(msg.get("role") == "system" for msg in messages):
-                    messages.insert(0, {
-                        "role": "system",
-                        "content": self.system_prompt
+            if len(messages) > 15:
+                messages = self.session_manager.compress_messages(session_id, keep_recent=6)
+                # 注意：压缩后不再重新添加system prompt，因为只在首次会话时添加
+            
+            # 规则引擎：检查是否可以跳过LLM直接处理
+            skip_llm_result = self._should_skip_llm(resolved_message, session_id)
+            if skip_llm_result:
+                # 直接调用工具，跳过LLM推理
+                tool_name = skip_llm_result["tool_name"]
+                tool_args = skip_llm_result["tool_args"]
+                
+                try:
+                    # 检查缓存（仅对查询工具）
+                    cache_key = None
+                    if tool_name == "search_houses":
+                        cache_key = f"{session_id}:{json.dumps(tool_args, sort_keys=True)}"
+                        if cache_key in self.query_cache:
+                            cached_result = self.query_cache[cache_key]
+                            tool_result = {
+                                "success": True,
+                                "data": cached_result
+                            }
+                        else:
+                            # 执行工具
+                            tool_func = TOOL_FUNCTIONS.get(tool_name)
+                            tool_result = await tool_func(client, **tool_args)
+                            # 缓存结果
+                            if tool_result.get("success") and cache_key:
+                                self.query_cache[cache_key] = tool_result.get("data", {})
+                    else:
+                        # 非查询工具直接执行
+                        tool_func = TOOL_FUNCTIONS.get(tool_name)
+                        tool_result = await tool_func(client, **tool_args)
+                    
+                    # 记录工具结果
+                    if tool_result.get("success"):
+                        if tool_name == "search_houses":
+                            compressed_data = self._compress_search_result(tool_result.get("data", {}))
+                            tool_output = json.dumps(compressed_data, ensure_ascii=False)
+                        else:
+                            tool_output = json.dumps(tool_result.get("data", {}), ensure_ascii=False)
+                    else:
+                        tool_output = json.dumps({"error": tool_result.get("error", "未知错误")}, ensure_ascii=False)
+                    
+                    tool_results.append({
+                        "name": tool_name,
+                        "success": tool_result.get("success", False),
+                        "output": tool_output
                     })
+                    
+                    # 更新查询状态
+                    self._update_query_state(session_id, tool_results)
+                    
+                    # 直接格式化JSON回复（跳过LLM格式化）
+                    if tool_name == "search_houses":
+                        house_ids = self._extract_house_ids_from_tool_result({
+                            "success": True,
+                            "output": tool_output
+                        })
+                        house_ids = house_ids[:5]  # 限制最多5套
+                        
+                        # 生成描述消息
+                        conditions = []
+                        if "district" in tool_args:
+                            conditions.append(f"{tool_args['district']}区")
+                        if "bedrooms" in tool_args:
+                            conditions.append(f"{tool_args['bedrooms']}居")
+                        if "min_price" in tool_args and "max_price" in tool_args:
+                            conditions.append(f"{tool_args['min_price']}-{tool_args['max_price']}元")
+                        if "max_subway_dist" in tool_args:
+                            conditions.append("近地铁")
+                        
+                        message_text = f"为您找到以下符合条件的房源：{', '.join(conditions)}" if conditions else "为您找到以下符合条件的房源："
+                        if not house_ids:
+                            message_text = "没有"
+                        
+                        final_response = json.dumps({
+                            "message": message_text,
+                            "houses": house_ids
+                        }, ensure_ascii=False)
+                    elif tool_name == "rent_house":
+                        if tool_result.get("success"):
+                            final_response = f"已成功租下房源 {tool_args['house_id']}（平台：{tool_args['listing_platform']}）"
+                        else:
+                            final_response = f"租房操作失败：{tool_result.get('error', '未知错误')}"
+                    else:
+                        final_response = tool_output
+                    
+                    # 添加最终回复到历史
+                    self.session_manager.add_message(session_id, "assistant", final_response)
+                    self.logger.log_session_message(session_id, "AI_REPLY", final_response)
+                    
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    return {
+                        "response": final_response,
+                        "status": "success",
+                        "tool_results": tool_results,
+                        "duration_ms": duration_ms
+                    }
+                except Exception as e:
+                    # 如果直接调用失败，继续使用LLM流程
+                    self.logger.log_error(session_id, "RULE_ENGINE_ERROR", f"规则引擎直接调用失败: {str(e)}", e)
             
             # 多轮工具调用循环
             iteration = 0
@@ -405,11 +621,16 @@ class AgentService:
             while iteration < self.max_iterations:
                 iteration += 1
                 
-                # 调用LLM
+                # 调用LLM（工具定义缓存：只在首次调用时传递）
+                tools_to_use = None
+                if not self.session_tools_introduced.get(session_id, False):
+                    tools_to_use = TOOLS_DEFINITION
+                    self.session_tools_introduced[session_id] = True
+                
                 llm_response = await self.llm_client.chat_completion(
                     messages=messages,
                     session_id=session_id,
-                    tools=TOOLS_DEFINITION
+                    tools=tools_to_use
                 )
                 
                 # 提取助手消息
@@ -444,17 +665,38 @@ class AgentService:
                         
                         # 需求验证：对于查询工具，验证关键参数
                         if tool_name in ["search_houses", "get_nearby_houses"]:
-                            # 验证page_size，如果未设置或过大，设置为合理值
-                            if "page_size" not in tool_args or tool_args.get("page_size", 0) > 10:
-                                tool_args["page_size"] = 10
-                        
-                        # 获取工具函数
-                        tool_func = TOOL_FUNCTIONS.get(tool_name)
-                        if not tool_func:
-                            raise ValueError(f"未知的工具: {tool_name}")
-                        
-                        # 执行工具
-                        tool_result = await tool_func(client, **tool_args)
+                            # 验证page_size，如果未设置或过大，设置为5（从10减少到5）
+                            if "page_size" not in tool_args or tool_args.get("page_size", 0) > 5:
+                                tool_args["page_size"] = 5
+                            
+                            # 检查缓存（仅对查询工具）
+                            cache_key = f"{session_id}:{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+                            if cache_key in self.query_cache:
+                                cached_result = self.query_cache[cache_key]
+                                tool_result = {
+                                    "success": True,
+                                    "data": cached_result
+                                }
+                            else:
+                                # 获取工具函数
+                                tool_func = TOOL_FUNCTIONS.get(tool_name)
+                                if not tool_func:
+                                    raise ValueError(f"未知的工具: {tool_name}")
+                                
+                                # 执行工具
+                                tool_result = await tool_func(client, **tool_args)
+                                
+                                # 缓存结果（如果成功）
+                                if tool_result.get("success") and cache_key:
+                                    self.query_cache[cache_key] = tool_result.get("data", {})
+                        else:
+                            # 非查询工具直接执行
+                            tool_func = TOOL_FUNCTIONS.get(tool_name)
+                            if not tool_func:
+                                raise ValueError(f"未知的工具: {tool_name}")
+                            
+                            # 执行工具
+                            tool_result = await tool_func(client, **tool_args)
                         
                         # 智能重试：如果查询无结果，尝试放宽条件
                         if tool_name == "search_houses" and not tool_result.get("success", True):
@@ -542,15 +784,48 @@ class AgentService:
                 self._update_query_state(session_id, tool_results)
             
             # 如果达到最大迭代次数，使用最后一次的回复
+            # 优化：如果最后一次迭代已有有效回复，直接使用，避免再次调用LLM
             if final_response is None:
-                # 再次调用LLM生成最终回复
-                llm_response = await self.llm_client.chat_completion(
-                    messages=messages,
-                    session_id=session_id,
-                    tools=None  # 不再需要工具
-                )
-                choice = llm_response["choices"][0]
-                final_response = choice["message"].get("content", "")
+                # 检查最后一次迭代是否有工具调用结果
+                if tool_results:
+                    # 如果有查询工具结果，直接格式化JSON回复，避免再次调用LLM
+                    search_tools = ["search_houses", "get_nearby_houses"]
+                    has_search = any(result.get("name") in search_tools for result in tool_results)
+                    if has_search:
+                        # 直接格式化JSON回复
+                        house_ids = []
+                        for result in tool_results:
+                            if result.get("name") in search_tools and result.get("success"):
+                                extracted_ids = self._extract_house_ids_from_tool_result(result)
+                                house_ids.extend(extracted_ids)
+                        
+                        house_ids = list(dict.fromkeys(house_ids))[:5]  # 去重并限制最多5套
+                        message_text = "为您找到以下符合条件的房源：" if house_ids else "没有"
+                        
+                        final_response = json.dumps({
+                            "message": message_text,
+                            "houses": house_ids
+                        }, ensure_ascii=False)
+                    else:
+                        # 非查询工具，需要调用LLM生成最终回复
+                        tools_to_use = None  # 不再需要工具
+                        llm_response = await self.llm_client.chat_completion(
+                            messages=messages,
+                            session_id=session_id,
+                            tools=tools_to_use
+                        )
+                        choice = llm_response["choices"][0]
+                        final_response = choice["message"].get("content", "")
+                else:
+                    # 没有工具调用结果，调用LLM生成最终回复
+                    tools_to_use = None  # 不再需要工具
+                    llm_response = await self.llm_client.chat_completion(
+                        messages=messages,
+                        session_id=session_id,
+                        tools=tools_to_use
+                    )
+                    choice = llm_response["choices"][0]
+                    final_response = choice["message"].get("content", "")
             
             # 检查是否有租房意图，如果有则自动调用rent_house工具
             if self._detect_rent_intent(message):

@@ -78,13 +78,13 @@ class SessionManager:
         
         return messages
     
-    def compress_messages(self, session_id: str, keep_recent: int = 10) -> List[Dict[str, str]]:
+    def compress_messages(self, session_id: str, keep_recent: int = 6) -> List[Dict[str, str]]:
         """
         压缩对话历史，只保留关键信息
         
         Args:
             session_id: 会话ID
-            keep_recent: 保留最近N轮对话
+            keep_recent: 保留最近N轮对话（从10减少到6）
         
         Returns:
             压缩后的消息列表
@@ -103,7 +103,39 @@ class SessionManager:
         
         # 保留最近的对话
         recent_messages = messages[-keep_recent * 2:]  # 每轮包含user和assistant
-        compressed.extend(recent_messages)
+        
+        # 压缩工具消息：只保留关键结果摘要
+        for msg in recent_messages:
+            if msg.get("role") == "tool":
+                # 压缩工具消息内容，只保留关键信息
+                try:
+                    import json
+                    content = msg.get("content", "")
+                    if content:
+                        data = json.loads(content)
+                        # 如果是查询结果，只保留items数量和关键字段
+                        if "items" in data:
+                            items_count = len(data.get("items", []))
+                            compressed_content = json.dumps({
+                                "total": data.get("total", 0),
+                                "items_count": items_count,
+                                "items": data.get("items", [])[:5]  # 只保留前5条
+                            }, ensure_ascii=False)
+                            compressed.append({
+                                "role": "tool",
+                                "tool_call_id": msg.get("tool_call_id"),
+                                "content": compressed_content
+                            })
+                        else:
+                            # 非查询工具，保持原样
+                            compressed.append(msg)
+                    else:
+                        compressed.append(msg)
+                except:
+                    # 解析失败，保持原样
+                    compressed.append(msg)
+            else:
+                compressed.append(msg)
         
         return compressed
     
