@@ -48,7 +48,7 @@ class SessionManager:
         
         return self.session_clients[session_id]
     
-    def get_messages(self, session_id: str, max_messages: Optional[int] = None) -> List[Dict[str, str]]:
+    def get_messages(self, session_id: str, max_messages: Optional[int] = 10) -> List[Dict[str, str]]:
         """
         获取Session的对话历史，支持压缩以节省token
         
@@ -78,7 +78,7 @@ class SessionManager:
         
         return messages
     
-    def compress_messages(self, session_id: str, keep_recent: int = 10) -> List[Dict[str, str]]:
+    def compress_messages(self, session_id: str, keep_recent: int = 5) -> List[Dict[str, str]]:
         """
         压缩对话历史，只保留关键信息
         

@@ -24,7 +24,7 @@ class AgentService:
         self.llm_client = LLMClient(model_ip)
         self.session_manager = session_manager
         self.logger = LoggerService()
-        self.max_iterations = 10  # 最大工具调用轮数
+        self.max_iterations = 5  # 最大工具调用轮数（大多数用例只需要1-2轮）
         self.system_prompt = self._get_system_prompt()
         # 存储最近查询的房源信息，用于租房操作
         self.recent_house_results: Dict[str, List[Dict[str, Any]]] = {}
@@ -38,48 +38,28 @@ class AgentService:
         Returns:
             System prompt字符串
         """
-        return """你是一个专业的租房助手Agent，帮助用户查找和租赁合适的房源。
+        return """你是租房助手Agent，帮助用户查找和租赁房源。
 
-## 核心任务
-1. **需求理解**：准确理解用户的租房需求，包括区域、价格、户型、地铁距离等条件
-2. **房源查询**：使用工具查询符合条件的房源，支持多条件筛选
-3. **结果输出**：返回最多5套候选房源，以JSON格式输出
-4. **租房操作**：识别用户租房意图，自动调用租房工具
+## 核心规则
+1. 近地铁：距离≤800米
+2. 输出格式：{"message": "描述", "houses": ["HF_xxx", ...]}，最多5套
+3. 房源ID：必须以"HF_"开头
+4. 无房源时：{"message": "没有", "houses": []}
 
-## 关键规则
-1. **近地铁定义**：房源到最近地铁站的直线距离≤800米视为"近地铁"
-2. **房源数量限制**：查询结果最多返回5套房源ID
-3. **输出格式要求**：
-   - 房源查询结果必须返回JSON格式：{"message": "描述信息", "houses": ["HF_xxx", ...]}
-   - 如果没有房源，返回：{"message": "没有", "houses": []}
-   - message字段应包含关键信息（区域、户型、地铁距离等）
-4. **房源ID格式**：必须以"HF_"开头，如HF_2001
-5. **多轮对话**：
-   - 理解指代消解（"最近的那套"、"其他的"等）
-   - 维护查询历史，支持"还有其他的吗"类查询
-   - 识别需求变更，动态调整查询条件
+## 工具使用
+- 优先使用search_houses查询
+- 查询前确保条件明确（区域、价格等）
+- 支持排序（价格、面积、地铁距离）
 
-## 工具使用策略
-1. **查询工具**：优先使用search_houses进行多条件查询，必要时使用get_nearby_houses
-2. **需求验证**：查询前确保关键条件明确（如区域、价格范围）
-3. **智能重试**：如果查询无结果，尝试放宽条件重新查询
-4. **排序支持**：根据用户要求进行排序（价格、面积、地铁距离等）
-
-## 租房操作识别
-当用户表达租房意图时（如"就租最近的那套"、"我要租这个"、"可以租吗"、"能租吗"等），应：
-1. 从对话历史或查询结果中提取房源ID和平台信息
-2. 自动调用rent_house工具完成租房操作
-3. 确认操作结果并告知用户
+## 租房操作
+当用户表达租房意图（"就租"、"我要租"、"可以租吗"等）时：
+1. 提取房源ID和平台信息
+2. 调用rent_house工具
+3. 确认结果
 
 ## 租房回复规则（重要）
-**严格禁止**：在没有调用rent_house工具的情况下，直接回复"已成功租下房源"、"租下"等表示租房成功的信息。
-
-**必须遵守**：
-- 只有在调用rent_house工具并成功返回后，才能回复"已成功租下房源"等成功信息
-- 当用户表达租房意图时，必须调用rent_house工具
-- 如果无法提取房源信息或租房工具调用失败，应明确告知用户错误原因，而不是错误地回复成功
-
-请始终遵循以上规则，提供专业、准确的租房服务。"""
+**禁止**：未调用rent_house工具就回复"已成功租下房源"等成功信息。
+**必须**：只有调用rent_house成功后才能回复成功信息。"""
     
     def _compress_search_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -114,14 +94,11 @@ class AgentService:
         compressed_items = []
         for item in items[:10]:  # 最多保留10条
             if isinstance(item, dict):
+                # 进一步压缩，只保留最核心字段：house_id, price, subway_distance
                 compressed_item = {
                     "house_id": item.get("house_id") or item.get("id") or item.get("houseId"),
                     "price": item.get("price"),
-                    "area": item.get("area"),
-                    "bedrooms": item.get("bedrooms"),
-                    "district": item.get("district"),
-                    "subway_distance": item.get("subway_distance"),
-                    "listing_platform": item.get("listing_platform")
+                    "subway_distance": item.get("subway_distance")
                 }
                 # 移除None值
                 compressed_item = {k: v for k, v in compressed_item.items() if v is not None}
@@ -145,14 +122,29 @@ class AgentService:
         Returns:
             是否包含租房意图
         """
-        rent_keywords = [
-            "租", "要租", "就租", "租这个", "租那套", "租最近", "租第一",
+        # 排除查询相关词汇，避免误判
+        query_keywords = ["找", "查询", "搜索", "筛选", "看看", "看看有", "看看能", "看看要"]
+        message_lower = message.lower()
+        
+        # 如果用户消息是查询类（包含查询关键词），不触发租房意图
+        if any(keyword in message for keyword in query_keywords):
+            return False
+        
+        # 排除"租金"等价格相关词汇（这些是查询条件，不是租房动作）
+        # 排除包含"租金"、"租房"等查询相关词汇的情况
+        if "租金" in message and not any(action in message for action in ["租这个", "租那套", "租最近", "租第一", "就租", "要租", "我要租"]):
+            return False
+        
+        # 只检测明确的租房动作词汇
+        rent_action_keywords = [
+            "就租", "要租", "租这个", "租那套", "租最近", "租第一",
             "租了", "租下", "确定租", "决定租", "选择租",
             "可以租吗", "能租吗", "想租", "我要租", "帮我租",
             "租下来", "租它", "租一套", "租一间"
         ]
-        message_lower = message.lower()
-        return any(keyword in message for keyword in rent_keywords)
+        
+        # 检查是否包含明确的租房动作
+        return any(keyword in message for keyword in rent_action_keywords)
     
     def _resolve_reference(self, message: str, session_id: str) -> str:
         """
@@ -378,8 +370,8 @@ class AgentService:
             self.session_manager.add_message(session_id, "user", resolved_message)
             
             # 获取对话历史（限制长度以节省token）
-            # 保留system message和最近20条消息（约10轮对话）
-            messages = self.session_manager.get_messages(session_id, max_messages=20)
+            # 保留system message和最近10条消息（约5轮对话）
+            messages = self.session_manager.get_messages(session_id, max_messages=10)
             
             # 如果是首次对话或新session，添加system prompt
             if not messages or all(msg.get("role") != "system" for msg in messages):
@@ -389,8 +381,8 @@ class AgentService:
                 })
             
             # 如果消息仍然过多，进一步压缩
-            if len(messages) > 25:
-                messages = self.session_manager.compress_messages(session_id, keep_recent=8)
+            if len(messages) > 15:
+                messages = self.session_manager.compress_messages(session_id, keep_recent=5)
                 # 确保system prompt存在
                 if not any(msg.get("role") == "system" for msg in messages):
                     messages.insert(0, {
@@ -466,6 +458,11 @@ class AgentService:
                                 "success": True,
                                 "output": json.dumps(tool_result.get("data", {}), ensure_ascii=False)
                             })
+                            # 提前终止：如果查询到足够房源（≥5套），立即返回结果
+                            if len(house_ids) >= 5:
+                                # 标记可以提前终止
+                                final_response = "查询完成"
+                                break
                             # 如果没有房源且是第一次查询，可以考虑放宽条件（这里先记录，由LLM决定是否重试）
                             if not house_ids and iteration == 1:
                                 # 在工具结果中添加提示信息
@@ -540,6 +537,26 @@ class AgentService:
                 
                 # 更新查询状态（用于多轮对话上下文理解）
                 self._update_query_state(session_id, tool_results)
+                
+                # 智能终止检查：如果查询到足够房源（≥5套）或查询成功且有结果，提前终止
+                search_tools = ["search_houses", "get_nearby_houses"]
+                should_terminate = False
+                for result in tool_results:
+                    if result.get("name") in search_tools and result.get("success"):
+                        house_ids = self._extract_house_ids_from_tool_result(result)
+                        # 如果查询到足够房源（≥5套），提前终止
+                        if len(house_ids) >= 5:
+                            should_terminate = True
+                            break
+                        # 如果查询成功且有房源（即使少于5套），也可以提前终止（避免不必要的后续调用）
+                        elif len(house_ids) > 0 and iteration >= 1:
+                            should_terminate = True
+                            break
+                
+                if should_terminate:
+                    # 提前终止，生成最终回复
+                    final_response = "查询完成"
+                    break
             
             # 如果达到最大迭代次数，使用最后一次的回复
             if final_response is None:
@@ -552,8 +569,19 @@ class AgentService:
                 choice = llm_response["choices"][0]
                 final_response = choice["message"].get("content", "")
             
-            # 检查是否有租房意图，如果有则自动调用rent_house工具
-            if self._detect_rent_intent(message):
+            # 检查当前轮次是否有search_houses工具调用且成功
+            # 如果有查询操作，优先返回查询结果，不触发自动租房
+            has_search_houses = any(
+                result.get("name") == "search_houses" and result.get("success")
+                for result in tool_results
+            )
+            
+            # 只有在没有查询操作或查询失败时，才检查租房意图
+            # 如果当前轮次有search_houses工具调用，优先返回查询结果
+            if has_search_houses:
+                # 有查询操作，不触发自动租房，直接返回查询结果
+                pass
+            elif self._detect_rent_intent(message):
                 rent_info = self._extract_rent_info_from_context(session_id, tool_results, messages)
                 if rent_info:
                     try:
@@ -580,6 +608,7 @@ class AgentService:
                         # 继续使用原始回复
             
             # 检查回复是否包含租房成功信息但没有rent_house调用，强制触发自动租房逻辑
+            # 但如果当前轮次有查询操作，不触发自动租房
             rent_success_keywords = ["已成功租下房源", "租下", "成功租", "已租", "租好了", "租到了"]
             has_rent_success_keyword = any(keyword in final_response for keyword in rent_success_keywords)
             has_rent_house_call = any(
@@ -587,8 +616,8 @@ class AgentService:
                 for result in tool_results
             )
             
-            if has_rent_success_keyword and not has_rent_house_call:
-                # 检测到租房意图，尝试自动租房
+            if has_rent_success_keyword and not has_rent_house_call and not has_search_houses:
+                # 检测到租房意图，尝试自动租房（只有在没有查询操作时）
                 if self._detect_rent_intent(message):
                     rent_info = self._extract_rent_info_from_context(session_id, tool_results, messages)
                     if rent_info:
@@ -822,9 +851,11 @@ class AgentService:
                                 item.get("houseId")
                             )
                             if house_id and str(house_id) in house_ids:
+                                # 从压缩后的数据中提取信息（只包含house_id, price, subway_distance）
+                                # 注意：压缩后的数据可能不包含area，所以使用0作为默认值
                                 house_info_map[str(house_id)] = {
                                     "price": item.get("price", 0),
-                                    "area": item.get("area_sqm", 0),  # 使用 area_sqm（面积）而不是 area（商圈）
+                                    "area": item.get("area_sqm", 0) or item.get("area", 0),  # 使用 area_sqm（面积）或 area
                                     "subway_distance": item.get("subway_distance", float('inf'))
                                 }
                 except Exception as e:
@@ -856,10 +887,17 @@ class AgentService:
         # 排序
         reverse = (sort_order == "desc") if sort_order else False
         if sort_by:
+            # 根据用户指定的排序字段和顺序排序
             sorted_ids = sorted(house_ids, key=get_sort_key, reverse=reverse)
         else:
             # 默认按匹配度排序（地铁距离近、价格低优先）
             sorted_ids = sorted(house_ids, key=get_sort_key, reverse=False)
+        
+        # 确保排序后的列表包含所有房源ID（处理信息缺失的情况）
+        # 将没有信息的房源ID追加到末尾
+        missing_ids = [hid for hid in house_ids if hid not in sorted_ids]
+        if missing_ids:
+            sorted_ids.extend(missing_ids)
         
         return sorted_ids
     
@@ -879,31 +917,86 @@ class AgentService:
         
         # 检查当前消息
         text = message.lower()
-        if "价格" in text or "租金" in text:
-            sort_by = "price"
-            if "从低到高" in text or "升序" in text or "便宜" in text:
-                sort_order = "asc"
-            elif "从高到低" in text or "降序" in text or "贵" in text:
-                sort_order = "desc"
-        elif "面积" in text:
-            sort_by = "area"
-            if "从大到小" in text or "降序" in text:
-                sort_order = "desc"
-            elif "从小到大" in text or "升序" in text:
-                sort_order = "asc"
-        elif "地铁" in text or "距离" in text:
-            sort_by = "subway"
-            if "从近到远" in text or "升序" in text:
-                sort_order = "asc"
-            elif "从远到近" in text or "降序" in text:
-                sort_order = "desc"
+        
+        # 优先检测明确的排序表达（如"按...排"、"按...排序"）
+        if "按" in text and ("排" in text or "排序" in text):
+            if "价格" in text or "租金" in text:
+                sort_by = "price"
+                if "从低到高" in text or "升序" in text or "便宜" in text or "低" in text:
+                    sort_order = "asc"
+                elif "从高到低" in text or "降序" in text or "贵" in text or "高" in text:
+                    sort_order = "desc"
+            elif "面积" in text:
+                sort_by = "area"
+                if "从大到小" in text or "降序" in text or "大" in text:
+                    sort_order = "desc"
+                elif "从小到大" in text or "升序" in text or "小" in text:
+                    sort_order = "asc"
+            elif "地铁" in text or "距离" in text or "离地铁" in text:
+                sort_by = "subway"
+                if "从近到远" in text or "升序" in text or "近" in text:
+                    sort_order = "asc"
+                elif "从远到近" in text or "降序" in text or "远" in text:
+                    sort_order = "desc"
+                else:
+                    # 如果没有明确指定顺序，默认从近到远
+                    sort_order = "asc"
+        
+        # 如果没有检测到明确的排序表达，检查一般关键词
+        if not sort_by:
+            if "价格" in text or "租金" in text:
+                sort_by = "price"
+                if "从低到高" in text or "升序" in text or "便宜" in text:
+                    sort_order = "asc"
+                elif "从高到低" in text or "降序" in text or "贵" in text:
+                    sort_order = "desc"
+            elif "面积" in text:
+                sort_by = "area"
+                if "从大到小" in text or "降序" in text:
+                    sort_order = "desc"
+                elif "从小到大" in text or "升序" in text:
+                    sort_order = "asc"
+            elif "地铁" in text or "距离" in text or "离地铁" in text:
+                sort_by = "subway"
+                # 默认从近到远（升序）
+                if "从近到远" in text or "升序" in text or "近" in text:
+                    sort_order = "asc"
+                elif "从远到近" in text or "降序" in text or "远" in text:
+                    sort_order = "desc"
+                else:
+                    # 如果没有明确指定顺序，默认从近到远
+                    sort_order = "asc"
         
         # 检查对话历史
         if not sort_by:
             for msg in reversed(messages):
                 if msg.get("role") == "user":
                     content = msg.get("content", "").lower()
-                    if "价格" in content or "租金" in content:
+                    if "按" in content and ("排" in content or "排序" in content):
+                        if "价格" in content or "租金" in content:
+                            sort_by = "price"
+                            if "从低到高" in content or "升序" in content:
+                                sort_order = "asc"
+                            elif "从高到低" in content or "降序" in content:
+                                sort_order = "desc"
+                            break
+                        elif "面积" in content:
+                            sort_by = "area"
+                            if "从大到小" in content or "降序" in content:
+                                sort_order = "desc"
+                            elif "从小到大" in content or "升序" in content:
+                                sort_order = "asc"
+                            break
+                        elif "地铁" in content or "距离" in content or "离地铁" in content:
+                            sort_by = "subway"
+                            if "从近到远" in content or "升序" in content:
+                                sort_order = "asc"
+                            elif "从远到近" in content or "降序" in content:
+                                sort_order = "desc"
+                            else:
+                                sort_order = "asc"
+                            break
+                    elif "价格" in content or "租金" in content:
                         sort_by = "price"
                         break
                     elif "面积" in content:
@@ -911,9 +1004,95 @@ class AgentService:
                         break
                     elif "地铁" in content or "距离" in content:
                         sort_by = "subway"
+                        sort_order = "asc"  # 默认从近到远
                         break
         
         return (sort_by, sort_order)
+    
+    def _generate_search_message(
+        self,
+        user_message: str,
+        tool_results: List[Dict[str, Any]],
+        house_ids: List[str]
+    ) -> str:
+        """
+        根据查询条件和结果生成符合用例要求的message
+        
+        Args:
+            user_message: 用户消息
+            tool_results: 工具调用结果列表
+            house_ids: 房源ID列表
+        
+        Returns:
+            生成的message字符串
+        """
+        if not house_ids:
+            return "没有"
+        
+        # 从工具结果中提取查询条件
+        query_conditions = []
+        search_tools = ["search_houses", "get_nearby_houses"]
+        
+        for result in tool_results:
+            if result.get("name") in search_tools and result.get("success"):
+                try:
+                    output_data = json.loads(result.get("output", "{}"))
+                    if isinstance(output_data, dict):
+                        items = output_data.get("items", [])
+                        if items and len(items) > 0:
+                            # 从第一个房源中提取关键信息
+                            first_item = items[0]
+                            if isinstance(first_item, dict):
+                                district = first_item.get("district")
+                                bedrooms = first_item.get("bedrooms")
+                                subway_distance = first_item.get("subway_distance")
+                                price = first_item.get("price")
+                                
+                                if district:
+                                    query_conditions.append(district)
+                                if bedrooms:
+                                    query_conditions.append(f"{bedrooms}居")
+                                if subway_distance is not None:
+                                    if subway_distance <= 800:
+                                        query_conditions.append("近地铁")
+                                    else:
+                                        query_conditions.append(f"地铁{int(subway_distance)}米")
+                                if price:
+                                    query_conditions.append(f"{price}元")
+                except:
+                    pass
+                break
+        
+        # 如果从工具结果中无法提取，从用户消息中提取关键信息
+        if not query_conditions:
+            # 提取区域信息
+            districts = ["海淀", "朝阳", "丰台", "大兴", "昌平", "通州", "房山", "顺义", "石景山", "门头沟"]
+            for district in districts:
+                if district in user_message:
+                    query_conditions.append(district)
+                    break
+            
+            # 提取户型信息
+            if "一居" in user_message or "1居" in user_message:
+                query_conditions.append("1居")
+            elif "两居" in user_message or "2居" in user_message:
+                query_conditions.append("2居")
+            elif "三居" in user_message or "3居" in user_message:
+                query_conditions.append("3居")
+            
+            # 提取价格信息
+            import re
+            price_match = re.search(r'(\d+)元', user_message)
+            if price_match:
+                query_conditions.append(f"{price_match.group(1)}元")
+        
+        # 生成message
+        if query_conditions:
+            message = "为您找到" + "".join(query_conditions) + "的房源"
+        else:
+            message = "为您找到以下符合条件的房源"
+        
+        return message
     
     def _format_response(self, response: str, tool_results: List[Dict[str, Any]], session_id: str) -> str:
         """
@@ -949,16 +1128,29 @@ class AgentService:
         )
         
         if has_search:
-            # 从工具结果中提取房源ID列表
+            # 优先从search_houses工具结果中提取房源ID
             house_ids = []
             search_success = False
+            search_result = None
             
+            # 优先查找search_houses的结果
             for result in tool_results:
-                if result.get("name") in search_tools:
-                    if result.get("success"):
+                if result.get("name") == "search_houses" and result.get("success"):
+                    search_success = True
+                    search_result = result
+                    extracted_ids = self._extract_house_ids_from_tool_result(result)
+                    house_ids.extend(extracted_ids)
+                    break
+            
+            # 如果没有search_houses，尝试get_nearby_houses
+            if not house_ids:
+                for result in tool_results:
+                    if result.get("name") == "get_nearby_houses" and result.get("success"):
                         search_success = True
+                        search_result = result
                         extracted_ids = self._extract_house_ids_from_tool_result(result)
                         house_ids.extend(extracted_ids)
+                        break
             
             # 如果从工具结果中未提取到ID，尝试从LLM回复中提取
             if not house_ids:
@@ -982,8 +1174,8 @@ class AgentService:
             # 限制最多5套
             house_ids = house_ids[:5]
             
-            # 生成消息（从原始回复中提取，或使用默认消息）
-            message = response.strip() if response else ""
+            # 生成消息（优先使用生成的message，包含关键信息）
+            message = ""
             
             # 尝试从LLM回复中提取message（如果是JSON格式）
             try:
@@ -1004,8 +1196,9 @@ class AgentService:
                 # 查询成功但没有房源
                 message = "没有"
             elif not message or len(message) < 3:
+                # 使用生成的message，包含关键信息
                 if house_ids:
-                    message = "为您找到以下符合条件的房源："
+                    message = self._generate_search_message(user_message, tool_results, house_ids)
                 else:
                     message = "没有"
             
